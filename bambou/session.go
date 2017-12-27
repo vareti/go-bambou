@@ -30,14 +30,17 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 )
 
 var currentSession Storer
+
+const NuagePageSize = 50
 
 // CurrentSession returns the current active and authenticated Session.
 func CurrentSession() Storer {
@@ -159,7 +162,7 @@ func (s *Session) prepareHeaders(request *http.Request, info *FetchingInfo) *Err
 	}
 
 	// Common headers
-	request.Header.Set("X-Nuage-PageSize", "50")
+	request.Header.Set("X-Nuage-PageSize", strconv.Itoa(NuagePageSize))
 	request.Header.Set("Content-Type", "application/json")
 
 	if info == nil {
@@ -216,8 +219,8 @@ func (s *Session) send(request *http.Request, info *FetchingInfo) (*http.Respons
 		return response, NewBambouError("HTTP client error", err.Error())
 	}
 
-	log.Debugf("Response Status: %s", response.Status)
-	log.Debugf("Response Headers: %s", response.Header)
+	log.Debugf("Response Status: %v", response.Status)
+	log.Debugf("Response Headers: %v", response.Header)
 
 	switch response.StatusCode {
 
@@ -408,31 +411,52 @@ func (s *Session) DeleteEntity(object Identifiable) *Error {
 // FetchChildren fetches the children with of given parent identified by the given Identity.
 func (s *Session) FetchChildren(parent Identifiable, identity Identity, dest interface{}, info *FetchingInfo) *Error {
 
+	val := reflect.Indirect(reflect.ValueOf(dest))
+	temp := reflect.New(reflect.TypeOf(dest).Elem())
+
 	url, berr := s.getURLForChildrenIdentity(parent, identity)
 	if berr != nil {
 		return berr
 	}
 
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return NewBambouError("HTTP transaction error", err.Error())
+	if info == nil {
+		info = &FetchingInfo{}
 	}
+	info.Page = 0
 
-	response, berr := s.send(request, info)
-	if berr != nil {
-		return berr
-	}
-	defer response.Body.Close()
+	for {
+		request, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			return NewBambouError("HTTP transaction error", err.Error())
+		}
 
-	body, _ := ioutil.ReadAll(response.Body)
-	log.Debugf("Response Body: %s", string(body))
+		response, berr := s.send(request, info)
+		if berr != nil {
+			return berr
+		}
 
-	if response.StatusCode == http.StatusNoContent || response.ContentLength == 0 {
-		return nil
-	}
+		jsonBody, _ := ioutil.ReadAll(response.Body)
+		if err := json.Unmarshal(jsonBody, temp.Interface()); err != nil {
+			return NewBambouError("HTTP Unmarshaling error", err.Error())
+		}
+		val.Set(reflect.AppendSlice(val, reflect.Indirect(temp)))
+		response.Body.Close()
 
-	if err := json.Unmarshal(body, &dest); err != nil {
-		return NewBambouError("HTTP Unmarshaling error", err.Error())
+		switch response.StatusCode {
+		case http.StatusNoContent:
+			return nil
+		case http.StatusOK:
+			if count, err := strconv.Atoi(response.Header.Get("X-Nuage-Count")); err != nil {
+				return NewBambouError("Invalid X-Nuage-Count: ", err.Error())
+			} else {
+				if count < NuagePageSize {
+					return nil
+				}
+				info.Page++
+			}
+		default:
+			return NewBambouError("HTTP error", response.Status)
+		}
 	}
 
 	return nil

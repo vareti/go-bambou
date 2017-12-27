@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -731,6 +732,7 @@ func TestSession_FetchChildren(t *testing.T) {
 
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Nuage-Count", "2")
 				fmt.Fprint(w, `[{"ID": "1", "name": "name1"}, {"ID": "2", "name": "name2"}]`)
 			}))
 			defer ts.Close()
@@ -760,6 +762,32 @@ func TestSession_FetchChildren(t *testing.T) {
 			})
 		})
 
+		Convey("When I fetch its children that are across more than one page with success", func() {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Nuage-Page", r.Header.Get("X-Nuage-Page"))
+				if r.Header.Get("X-Nuage-Page") == "1" {
+					w.Header().Set("X-Nuage-Count", "2")
+				} else {
+					w.Header().Set("X-Nuage-Count", strconv.Itoa(NuagePageSize))
+				}
+				fmt.Fprint(w, `[{"ID": "1", "name": "name1"}, {"ID": "2", "name": "name2"}]`)
+			}))
+			defer ts.Close()
+			session := NewSession("username", "password", "organization", ts.URL, r)
+
+			e := NewFakeObject("xxx")
+			var l FakeObjectsList
+			if err := session.FetchChildren(e, FakeIdentity, &l, nil); err != nil {
+				t.Fatalf("fetch children failed with error : %v", err)
+			}
+
+			Convey("Then the length of the children list should be 4", func() {
+				So(len(l), ShouldEqual, 4)
+			})
+
+		})
+
 		Convey("When I fetch its children but the parent has no ID", func() {
 
 			session := NewSession("username", "password", "organization", "http://fake.com", nil)
@@ -776,6 +804,7 @@ func TestSession_FetchChildren(t *testing.T) {
 		Convey("When I fetch its children while there is no data", func() {
 
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Nuage-Count", "0")
 				w.Header().Set("Content-Type", "application/json")
 			}))
 			defer ts.Close()
@@ -795,6 +824,7 @@ func TestSession_FetchChildren(t *testing.T) {
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("X-Nuage-Count", "0")
 				fmt.Fprint(w, `[]`)
 			}))
 			defer ts.Close()
